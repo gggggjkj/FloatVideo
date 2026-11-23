@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    html,body,#stage{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+    video,#youtube,#bilibili{display:none;width:100%;height:100%;object-fit:contain}
+    #bilibili{border:0}
+  </style>
+</head>
+<body>
+  <div id="stage"><video id="video" playsinline></video><div id="youtube"></div></div>
+  <script>
+    const video = document.getElementById('video');
+    let youtubeElement = document.getElementById('youtube');
+    let mode = null, player = null, youtubeReady = false, pendingVideo = null;
+    let speed = 1, youtubePlayerReady = false;
+    function send(message) { window.chrome.webview.postMessage(message); }
+    function status(message) { send({type:'status', message}); }
+    function error(message) { send({type:'error', message}); }
+    video.addEventListener('error', () => error('無法播放此連結。請使用直接影片網址（MP4／WebM）或 YouTube 網址。'));
+    video.addEventListener('playing', () => status('播放中'));
+    video.addEventListener('pause', () => { if (mode === 'direct') status('已暫停'); });
+    video.addEventListener('waiting', () => status('緩衝中…'));
+    video.addEventListener('ended', () => status('播放完畢'));
+    window.onYouTubeIframeAPIReady = () => { youtubeReady = true; if (pendingVideo) createYouTube(pendingVideo); };
+    function createYouTube(data) {
+      if (!youtubeReady) { pendingVideo = data; return; }
+      pendingVideo = null;
+      player = new YT.Player('youtube', {
+        width:'100%', height:'100%', videoId:data.id,
+        playerVars:{autoplay:1, controls:0, playsinline:1, rel:0, origin:location.origin},
+        events:{
+          onReady: event => {
+            if (player !== event.target) return;
+            youtubePlayerReady = true;
+            event.target.setVolume(data.volume);
+            event.target.playVideo();
+            status('YouTube 已載入；若未自動播放，請點擊影片畫面');
+            setSpeed(speed);
+          },
+          onStateChange: event => {
+            if (event.data === YT.PlayerState.PLAYING) status('播放中');
+            else if (event.data === YT.PlayerState.PAUSED) status('已暫停');
+            else if (event.data === YT.PlayerState.BUFFERING) status('緩衝中…');
+            else if (event.data === YT.PlayerState.ENDED) status('播放完畢');
+          },
+          onError: () => error('YouTube 無法嵌入或播放這支影片。請確認影片網址與嵌入權限。')
+        }
+      });
+    }
+    function loadMedia(data) {
+      mode = data.kind;
+      speed = data.speed;
+      pendingVideo = null;
+      youtubePlayerReady = false;
+      video.pause(); video.removeAttribute('src'); video.load();
+      if (player && typeof player.destroy === 'function') { player.destroy(); player = null; }
+      document.getElementById('bilibili')?.remove();
+      document.getElementById('youtube')?.remove();
+      youtubeElement = document.createElement('div');
+      youtubeElement.id = 'youtube';
+      document.getElementById('stage').appendChild(youtubeElement);
+      video.style.display = mode === 'direct' ? 'block' : 'none';
+      youtubeElement.style.display = mode === 'youtube' ? 'block' : 'none';
+      if (mode === 'direct') {
+        video.volume = data.volume / 100;
+        video.src = data.url;
+        video.playbackRate = speed;
+        video.play().catch(() => status('請按快捷鍵開始影片'));
+      } else if (mode === 'youtube') createYouTube(data);
+      else if (mode === 'bilibili') {
+        const params = new URLSearchParams({autoplay:'1', danmaku:'0'});
+        if (data.bvid) params.set('bvid', data.bvid);
+        if (data.aid) params.set('aid', data.aid);
+        if (data.episodeId) params.set('episodeId', data.episodeId);
+        if (data.page) {
+          params.set('p', String(data.page));
+          params.set('page', String(data.page));
+        }
+        if (data.cid) params.set('cid', String(data.cid));
+        const frame = document.createElement('iframe');
+        frame.id = frame.name = 'bilibili';
+        frame.allow = 'autoplay; fullscreen; picture-in-picture';
+        frame.allowFullscreen = true;
+        frame.src = 'https://player.bilibili.com/player.html?' + params;
+        frame.onload = () => status('Bilibili 播放器已開啟；可用快捷鍵控制');
+        document.getElementById('stage').appendChild(frame);
+        frame.style.display = 'block';
+      }
+    }
+    function togglePlay() {
+      if (mode === 'direct') { if (video.paused) video.play().catch(() => error('播放失敗')); else video.pause(); }
+      if (mode === 'youtube' && player && player.getPlayerState) {
+        if (player.getPlayerState() === YT.PlayerState.PLAYING) player.pauseVideo(); else player.playVideo();
+      }
+    }
+    function seekRelative(seconds) {
+      if (mode === 'direct' && Number.isFinite(video.duration)) video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + seconds));
+      if (mode === 'youtube' && player && player.getCurrentTime) player.seekTo(Math.max(0, Math.min(player.getDuration(), player.getCurrentTime() + seconds)), true);
+    }
+    function setVolume(value) {
+      value = Math.max(0, Math.min(100, value));
+      video.volume = value / 100;
+      if (player && player.setVolume) player.setVolume(value);
+    }
+    function setSpeed(value) {
+      speed = value;
+      if (mode === 'direct') video.playbackRate = value;
+      if (mode === 'youtube' && youtubePlayerReady) {
+        const rates = player.getAvailablePlaybackRates();
+        if (rates.includes(value)) player.setPlaybackRate(value);
+        else {
+          player.setPlaybackRate(1);
+          status('這支 YouTube 影片不支援所選倍速，已使用 1×');
+        }
+      }
+    }
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(script);
+    send({type:'ready'});
+  </script>
+</body>
+</html>
+
